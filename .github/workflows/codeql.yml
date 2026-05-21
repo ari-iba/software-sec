@@ -2,9 +2,9 @@ name: "CodeQL"
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "main", "master" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "main", "master" ]
   schedule:
     - cron: '30 18 * * 4'
 
@@ -55,3 +55,66 @@ jobs:
           echo "SAST Scan heeft $ALERTS kwetsbaarheden gevonden. De build wordt geblokkeerd."
           exit 1
         fi
+
+  dast:
+    name: DAST Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start Juice Shop (Docker)
+        run: |
+          docker pull bkimminich/juice-shop:latest
+          docker run -d --name juice -p 3000:3000 bkimminich/juice-shop:latest
+          for i in {1..30}; do
+            if curl -sSf http://localhost:3000 > /dev/null; then
+              echo "Juice-Shop is up"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Run OWASP ZAP baseline scan
+        run: |
+          docker pull owasp/zap2docker-stable
+          docker run --rm --network host owasp/zap2docker-stable zap-baseline.py -t http://localhost:3000 -r /zap/wrk/dast-report.html -I || true
+
+      - name: Save report
+        run: |
+          mkdir -p report
+          docker run --rm --network host -v $(pwd)/report:/zap/wrk owasp/zap2docker-stable cp /zap/wrk/dast-report.html /zap/wrk/dast-report.html || true
+          if [ -f report/dast-report.html ]; then
+            echo "Report saved to report/dast-report.html"
+          else
+            echo "Report not found - continuing"
+          fi
+
+      - name: Upload DAST report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-dast-report
+          path: report/dast-report.html
+
+      - name: Fail on medium/high alerts
+        if: always()
+        run: |
+          if [ -f report/dast-report.html ]; then
+            if grep -E "Medium|High" report/dast-report.html >/dev/null; then
+              echo "Medium/High alerts found"
+              exit 1
+            else
+              echo "No Medium/High alerts"
+            fi
+          else
+            echo "No report to check"
+          fi
+
+      - name: Stop Juice Shop
+        if: always()
+        run: |
+          docker rm -f juice || true
