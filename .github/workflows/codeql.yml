@@ -23,7 +23,7 @@ jobs:
 
       # ✅ Dependency scanning using npm audit (Node.js projects)
       - name: Install dependencies
-        run: npm install
+        run: npm install --ignore-scripts
 
       - name: Run npm audit
         run: npm audit --json > audit.json || true
