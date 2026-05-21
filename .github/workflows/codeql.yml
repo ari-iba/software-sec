@@ -12,7 +12,10 @@ jobs:
   sca:
     name: SCA Scan
     needs: secret-scan
+    continue-on-error: true
     runs-on: ubuntu-latest
+    outputs:
+      vulns_found: ${{ steps.sca_results.outputs.vulns_found }}
 
     permissions:
       contents: read
@@ -38,14 +41,36 @@ jobs:
 
           if [ "$VULNS" -gt 0 ]; then
             echo "❌ Vulnerabilities found! Blocking pipeline."
+            # mark vulnerabilities found for downstream enforcement
+            echo "vulns_found=true" >> $GITHUB_OUTPUT
             exit 1
           else
             echo "✅ No vulnerabilities found"
+            echo "vulns_found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set sca output
+        id: sca_results
+        if: always()
+        run: |
+          # If $GITHUB_OUTPUT already has vulns_found it will be available here via step outputs
+          if [ -f audit.json ]; then
+            V=$(cat audit.json | jq '.metadata.vulnerabilities.total')
+            if [ "$V" -gt 0 ]; then
+              echo "vulns_found=true" >> $GITHUB_OUTPUT
+            else
+              echo "vulns_found=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "vulns_found=false" >> $GITHUB_OUTPUT
           fi
 
   secret-scan:
     name: Secret Scanning
     runs-on: ubuntu-latest
+    continue-on-error: true
+    outputs:
+      secrets_found: ${{ steps.secret_results.outputs.secrets_found }}
     permissions:
       contents: read
       pull-requests: read
@@ -68,13 +93,21 @@ jobs:
         run: |
           gitleaks detect --source . --report-format json --report-path gitleaks-report.json || true
 
+      - name: Set secret-scan output
+        id: secret_results
+        run: |
+          if [ -f gitleaks-report.json ] && [ -s gitleaks-report.json ]; then
+            echo "secrets_found=true" >> $GITHUB_OUTPUT
+          else
+            echo "secrets_found=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Fail on findings
         if: always()
         run: |
           if [ -f gitleaks-report.json ] && [ -s gitleaks-report.json ]; then
             echo "Secrets found by gitleaks — failing pipeline"
             cat gitleaks-report.json
-            exit 1
           else
             echo "No secrets found"
           fi
@@ -82,7 +115,10 @@ jobs:
   dast:
     name: DAST Scan
     needs: secret-scan
+    continue-on-error: true
     runs-on: ubuntu-latest
+    outputs:
+      dast_alerts: ${{ steps.dast_results.outputs.dast_alerts }}
 
     steps:
       - name: Start Juice Shop (Docker)
@@ -113,14 +149,62 @@ jobs:
           fi
 
       - name: Fail on medium/high alerts
+        id: dast_results
+        if: always()
         run: |
           if [ -f report/dast-report.html ]; then
-            grep -E "Medium|High" report/dast-report.html && (echo "Medium/High alerts found" && exit 1) || echo "No Medium/High alerts"
+            if grep -E "Medium|High" report/dast-report.html >/dev/null; then
+              echo "dast_alerts=true" >> $GITHUB_OUTPUT
+              echo "Medium/High alerts found"
+            else
+              echo "dast_alerts=false" >> $GITHUB_OUTPUT
+              echo "No Medium/High alerts"
+            fi
           else
+            echo "dast_alerts=false" >> $GITHUB_OUTPUT
             echo "No report to check"
           fi
+
+      - name: Upload DAST report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-report
+          path: report/dast-report.html
 
       - name: Stop Juice Shop
         if: always()
         run: |
           docker rm -f juice || true
+
+  enforce-blockers:
+    name: Enforce Findings
+    runs-on: ubuntu-latest
+    needs: [ secret-scan, sca, dast ]
+    steps:
+      - name: Summary and fail when necessary
+        run: |
+          SECRETS_FOUND="${{ needs.secret-scan.outputs.secrets_found }}"
+          VULNS_FOUND="${{ needs.sca.outputs.vulns_found }}"
+          DAST_ALERTS="${{ needs.dast.outputs.dast_alerts }}"
+
+          echo "Secrets found: $SECRETS_FOUND"
+          echo "Vulnerabilities found: $VULNS_FOUND"
+          echo "DAST medium/high alerts: $DAST_ALERTS"
+
+          if [ "$SECRETS_FOUND" = "true" ]; then
+            echo "Failing due to secrets found by gitleaks"
+            exit 1
+          fi
+
+          if [ "$VULNS_FOUND" = "true" ]; then
+            echo "Failing due to SCA vulnerabilities"
+            exit 1
+          fi
+
+          if [ "$DAST_ALERTS" = "true" ]; then
+            echo "Failing due to DAST medium/high alerts"
+            exit 1
+          fi
+
+          echo "No blocking findings"
