@@ -21,6 +21,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: DAST: Log start
+        run: |
+          echo "===== DAST job starting ====="
+          date
+          env | sort
+
       - name: Start Juice Shop (Docker)
         run: |
           set -x

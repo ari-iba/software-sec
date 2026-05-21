@@ -28,6 +28,13 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+      - name: DAST: Log start
+        if: always()
+        run: |
+          echo "===== DAST job starting (inside CodeQL workflow) ====="
+          date
+          env | sort
+
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
       with:
