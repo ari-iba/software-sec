@@ -23,7 +23,8 @@ jobs:
       - name: Start Juice Shop (Docker)
         run: |
           docker pull bkimminich/juice-shop:latest
-          docker run -d --name juice -p 3000:3000 bkimminich/juice-shop:latest
+          docker network create zapnet || true
+          docker run -d --name juice --network zapnet -p 3000:3000 bkimminich/juice-shop:latest
           for i in {1..30}; do
             if curl -sSf http://localhost:3000 > /dev/null; then
               echo "Juice-Shop is up"
@@ -35,14 +36,8 @@ jobs:
       - name: Run OWASP ZAP baseline scan
         run: |
           docker pull owasp/zap2docker-stable
-          # Run baseline; write report to container work dir
-          docker run --rm --network host owasp/zap2docker-stable zap-baseline.py -t http://localhost:3000 -r /zap/wrk/dast-report.html -I || true
-
-      - name: Save report
-        run: |
           mkdir -p report
-          # Try copying report from image using a container mounting host folder
-          docker run --rm --network host -v $(pwd)/report:/zap/wrk owasp/zap2docker-stable cp /zap/wrk/dast-report.html /zap/wrk/dast-report.html || true
+          docker run --rm --network zapnet -v $(pwd)/report:/zap/wrk owasp/zap2docker-stable zap-baseline.py -t http://juice:3000 -r /zap/wrk/dast-report.html -I || true
           if [ -f report/dast-report.html ]; then
             echo "Report saved to report/dast-report.html"
           else
