@@ -1,6 +1,7 @@
 name: "DAST Scan (OWASP ZAP)"
 
 on:
+  workflow_dispatch: {}
   push:
     branches: [ "main", "master" ]
   pull_request:
@@ -22,6 +23,8 @@ jobs:
 
       - name: Start Juice Shop (Docker)
         run: |
+          set -x
+          echo "Pulling juice-shop image"
           docker pull bkimminich/juice-shop:latest
           docker network create zapnet || true
           docker run -d --name juice --network zapnet -p 3000:3000 bkimminich/juice-shop:latest
@@ -35,8 +38,11 @@ jobs:
 
       - name: Run OWASP ZAP baseline scan
         run: |
+          set -x
+          echo "Pulling ZAP docker image"
           docker pull owasp/zap2docker-stable
           mkdir -p report
+          echo "Running zap-baseline against http://juice:3000"
           docker run --rm --network zapnet -v $(pwd)/report:/zap/wrk owasp/zap2docker-stable zap-baseline.py -t http://juice:3000 -r /zap/wrk/dast-report.html -I || true
           if [ -f report/dast-report.html ]; then
             echo "Report saved to report/dast-report.html"
